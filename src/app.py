@@ -5,10 +5,12 @@ A super simple FastAPI application that allows students to view and sign up
 for extracurricular activities at Mergington High School.
 """
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Header
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import RedirectResponse
+from typing import Optional
 import os
+import json
 from pathlib import Path
 
 app = FastAPI(title="Mergington High School API",
@@ -18,6 +20,23 @@ app = FastAPI(title="Mergington High School API",
 current_dir = Path(__file__).parent
 app.mount("/static", StaticFiles(directory=os.path.join(Path(__file__).parent,
           "static")), name="static")
+
+# Load teachers credentials
+def load_teachers():
+    teachers_file = os.path.join(Path(__file__).parent, "teachers.json")
+    with open(teachers_file, 'r') as f:
+        data = json.load(f)
+    return data["teachers"]
+
+# In-memory session storage (in production, use proper session management)
+active_sessions = set()
+
+def verify_teacher_auth(authorization: Optional[str] = Header(None)) -> bool:
+    """Verify if the request has valid teacher authentication"""
+    if not authorization:
+        return False
+    # Simple token check - in production, use proper JWT or session tokens
+    return authorization in active_sessions
 
 # In-memory activity database
 activities = {
@@ -83,14 +102,50 @@ def root():
     return RedirectResponse(url="/static/index.html")
 
 
+@app.post("/login")
+def login(username: str, password: str):
+    """Login endpoint for teachers"""
+    teachers = load_teachers()
+    
+    # Check credentials
+    for teacher in teachers:
+        if teacher["username"] == username and teacher["password"] == password:
+            # Generate simple token (in production, use proper JWT)
+            token = f"teacher_{username}_{len(active_sessions)}"
+            active_sessions.add(token)
+            return {"token": token, "message": "Login successful"}
+    
+    raise HTTPException(status_code=401, detail="Invalid credentials")
+
+
+@app.post("/logout")
+def logout(authorization: Optional[str] = Header(None)):
+    """Logout endpoint for teachers"""
+    if authorization and authorization in active_sessions:
+        active_sessions.remove(authorization)
+        return {"message": "Logout successful"}
+    raise HTTPException(status_code=401, detail="Not authenticated")
+
+
+@app.get("/check-auth")
+def check_auth(authorization: Optional[str] = Header(None)):
+    """Check if user is authenticated"""
+    is_authenticated = verify_teacher_auth(authorization)
+    return {"authenticated": is_authenticated}
+
+
 @app.get("/activities")
 def get_activities():
     return activities
 
 
 @app.post("/activities/{activity_name}/signup")
-def signup_for_activity(activity_name: str, email: str):
-    """Sign up a student for an activity"""
+def signup_for_activity(activity_name: str, email: str, authorization: Optional[str] = Header(None)):
+    """Sign up a student for an activity - requires teacher authentication"""
+    # Check authentication
+    if not verify_teacher_auth(authorization):
+        raise HTTPException(status_code=403, detail="Only teachers can register students")
+    
     # Validate activity exists
     if activity_name not in activities:
         raise HTTPException(status_code=404, detail="Activity not found")
@@ -111,8 +166,12 @@ def signup_for_activity(activity_name: str, email: str):
 
 
 @app.delete("/activities/{activity_name}/unregister")
-def unregister_from_activity(activity_name: str, email: str):
-    """Unregister a student from an activity"""
+def unregister_from_activity(activity_name: str, email: str, authorization: Optional[str] = Header(None)):
+    """Unregister a student from an activity - requires teacher authentication"""
+    # Check authentication
+    if not verify_teacher_auth(authorization):
+        raise HTTPException(status_code=403, detail="Only teachers can unregister students")
+    
     # Validate activity exists
     if activity_name not in activities:
         raise HTTPException(status_code=404, detail="Activity not found")
